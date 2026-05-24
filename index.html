@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>激流勇进 - 肾结石排出模拟</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+body{background:#222;display:flex;justify-content:center;align-items:center;min-height:100vh;font-family:'Courier New',monospace;overflow:hidden;touch-action:none;-webkit-user-select:none;user-select:none;}
+.wrap{position:relative;width:100%;max-width:480px;}
+canvas{width:100%;border:3px solid #000;background:#fff;display:block;image-rendering:pixelated;}
+#screen,#result{
+  position:absolute;top:0;left:0;width:100%;height:100%;display:flex;flex-direction:column;justify-content:center;
+  align-items:center;background:rgba(255,255,255,0.97);z-index:10;padding:20px;text-align:center;
+}
+#screen h1{color:#000;font-size:clamp(24px,6vw,36px);margin-bottom:4px;}
+#screen .sub{color:#555;font-size:clamp(11px,2.5vw,14px);margin-bottom:15px;}
+#screen p{color:#333;font-size:clamp(12px,2.8vw,14px);margin:3px 0;max-width:90%;}
+#screen button,#result button{
+  padding:clamp(10px,2.5vw,14px) clamp(24px,6vw,40px);font-size:clamp(14px,3.5vw,18px);
+  background:#fff;color:#000;border:3px solid #000;cursor:pointer;margin-top:15px;
+  font-family:'Courier New',monospace;font-weight:bold;min-width:clamp(130px,33vw,180px);
+}
+#screen button:active,#result button:active{background:#000;color:#fff;}
+#result{display:none;}
+#result.show{display:flex;}
+#result h2{color:#000;font-size:clamp(22px,5.5vw,30px);}
+#result .s{color:#000;font-size:clamp(14px,3.5vw,18px);margin:5px 0;}
+#controls{position:absolute;bottom:10px;left:0;width:100%;display:none;justify-content:space-between;padding:0 8px;z-index:5;}
+#controls.show{display:flex;}
+#controls button{
+  width:clamp(55px,14vw,80px);height:clamp(55px,14vw,80px);border:3px solid #000;
+  background:rgba(0,0,0,0.08);color:#000;font-size:clamp(22px,5.5vw,32px);border-radius:50%;
+  cursor:pointer;font-weight:bold;display:flex;align-items:center;justify-content:center;
+  -webkit-tap-highlight-color:transparent;touch-action:none;
+}
+#controls button:active{background:rgba(0,0,0,0.25);}
+</style>
+</head>
+<body>
+<div class="wrap">
+<canvas id="c" width="480" height="720"></canvas>
+<div id="controls"><button id="btnL">◀</button><button id="btnR">▶</button></div>
+<div id="screen">
+  <h1>🪨 激流勇进</h1>
+  <div class="sub">[ 肾结石排出模拟 · 解剖学游戏 ]</div>
+  <p>← → 控制平衡，护送结石安全通过输尿管和尿道</p>
+  <p style="color:#999;font-size:clamp(10px,2.2vw,12px);margin-top:8px;">
+    输尿管3处狭窄 + 膀胱 + 尿道3处狭窄 = 共6道关卡</p>
+  <button ontouchend="startGame()" onclick="startGame()">▶ 开始冒险</button>
+</div>
+<div id="result">
+  <h2 id="resultTitle"></h2>
+  <div class="s" id="resultMsg"></div>
+  <div class="s" style="font-size:clamp(12px,2.8vw,15px);color:#555;" id="resultAnatomy"></div>
+  <button ontouchend="restart()" onclick="restart()">再来一次</button>
+</div>
+</div>
+
+<script>
+const c=document.getElementById('c'),ctx=c.getContext('2d');
+ctx.imageSmoothingEnabled=false;
+const W=480,H=720;
+
+let state='menu',f=0,cf=0;
+let stone={pos:0.5,target:0.5}; // 0=left wall, 1=right wall
+let safeWidth=0.5, progress=0;
+let flowSpeed=0;
+let alive=true,won=false;
+let touchL=false,touchR=false,moveDir=0;
+let stage=0;
+let center=0.5,centerOffset=0;
+let hp=100,outsideTimer=0; // which narrowing we're at (0-5)
+let particles=[];
+
+// Anatomical data: 6 narrowings + bladder
+// Normal ureter diameter ~3-4mm, narrowings as fraction of max
+// Scale: 1.0 = bladder width, 0 = fully closed
+// offset: 0=center, -1=far left wall, 1=far right wall (narrowing offset position)
+const sections=[
+  // Format: {name, narrow, speed, dur, offset, isRest?}
+  // Rest segments between narrowings give player time to recover
+  {name:'⬜ 输尿管上段（平稳）',narrow:0.42, speed:0.5, dur:120, offset:0, rest:true},
+  {name:'第1狭窄·肾盂输尿管连接处',narrow:0.22, speed:1.5, dur:180, offset:-0.40},
+  {name:'⬜ 输尿管中段（恢复）',narrow:0.42, speed:0.5, dur:100, offset:0, rest:true},
+  {name:'第2狭窄·越过髂血管处',narrow:0.30, speed:1.3, dur:160, offset:0.35},
+  {name:'⬜ 输尿管下段（恢复）',narrow:0.42, speed:0.5, dur:100, offset:0, rest:true},
+  {name:'第3狭窄·输尿管膀胱连接处',narrow:0.18, speed:1.8, dur:200, offset:-0.30},
+  {name:'🚩 膀胱（缓冲池·舒缓）',narrow:0.72, speed:0.2, dur:260, offset:0},
+  {name:'第4狭窄·尿道内口',narrow:0.32, speed:1.3, dur:150, offset:0.45},
+  {name:'⬜ 尿道前列腺部（恢复）',narrow:0.42, speed:0.5, dur:90, offset:0, rest:true},
+  {name:'第5狭窄·尿道膜部',narrow:0.25, speed:1.5, dur:160, offset:-0.35},
+  {name:'⬜ 尿道球部（恢复）',narrow:0.42, speed:0.5, dur:90, offset:0, rest:true},
+  {name:'第6狭窄·尿道外口',narrow:0.20, speed:1.8, dur:170, offset:0},
+];
+// Randomize offsets on init
+const defaultOffsets=sections.map(s=>s.offset);
+function randomizeOffsets(){
+  sections.forEach((s,i)=>{
+    if(!s.rest) s.offset=(Math.random()-0.5)*0.9;
+    else s.offset=0;
+  });
+}
+// Between narrowings: normal width segments
+const normalWidth=0.42;
+const GAME_DURATION_FRAMES=60*60; // 60 seconds at 60fps
+
+const anatomyInfo=[
+  '输尿管上段：管径约3-4mm，暂时平稳，做好准备',
+  '第1狭窄：肾盂输尿管连接处（UPJ），直径约2mm，结石最易嵌顿于此！',
+  '安全通过第1狭窄！输尿管中段稍微宽阔',
+  '第2狭窄：越过髂血管处（骨盆入口），直径约3-4mm',
+  '安全通过第2狭窄！输尿管下段即将进入膀胱',
+  '第3狭窄：输尿管膀胱连接处（UVJ），直径约1-2mm，输尿管最窄处！',
+  '🚩 膀胱：容量约300-500ml，可稍作喘息',
+  '第4狭窄：尿道内口（膀胱颈），进入尿道第一关',
+  '安全通过第4狭窄！尿道前列腺部',
+  '第5狭窄：尿道膜部，穿尿生殖膈，直径约8-9mm',
+  '安全通过第5狭窄！最后一关就在前方',
+  '第6狭窄：尿道外口，直径约6-7mm，冲过去就是胜利！',
+];
+
+// Controls
+const btnL=document.getElementById('btnL'),btnR=document.getElementById('btnR');
+btnL.addEventListener('touchstart',e=>{e.preventDefault();touchL=true;});
+btnL.addEventListener('touchend',e=>{e.preventDefault();touchL=false;});
+btnR.addEventListener('touchstart',e=>{e.preventDefault();touchR=true;});
+btnR.addEventListener('touchend',e=>{e.preventDefault();touchR=false;});
+btnL.addEventListener('mousedown',()=>touchL=true);
+btnL.addEventListener('mouseup',()=>touchL=false);
+btnR.addEventListener('mousedown',()=>touchR=true);
+btnR.addEventListener('mouseup',()=>touchR=false);
+document.onkeydown=e=>{if(e.key==='ArrowLeft')touchL=true;if(e.key==='ArrowRight')touchR=true;};
+document.onkeyup=e=>{if(e.key==='ArrowLeft')touchL=false;if(e.key==='ArrowRight')touchR=false;};
+
+function dr(x,y,w,h,c){ctx.fillStyle=c;ctx.fillRect(x,y,w,h);}
+
+// =========== Cutscene ===========
+function drawCut(){
+  cf++;
+  dr(0,0,W,H,'#fff');
+  
+  if(cf<60){
+    // Stone forming in kidney
+    ctx.fillStyle='#000';ctx.font='bold 24px monospace';ctx.textAlign='center';
+    ctx.fillText('🪨',240,200);
+    ctx.font='16px monospace';ctx.fillText('肾脏内...',240,250);
+    ctx.font='13px monospace';ctx.fillStyle='#555';
+    ctx.fillText('一颗肾结石正在形成',240,290);
+    ctx.textAlign='left';
+  } else if(cf<120){
+    ctx.font='bold 28px monospace';ctx.textAlign='center';
+    ctx.fillText('💥',240,200);
+    ctx.fillStyle='#000';ctx.font='16px monospace';ctx.fillText('结石脱落！',240,260);
+    ctx.font='14px monospace';ctx.fillStyle='#555';
+    ctx.fillText('进入输尿管...',240,290);
+    ctx.textAlign='left';
+    // Stone falling animation
+    const y=270+Math.sin(cf*0.3)*8;
+    ctx.beginPath();ctx.arc(240,y,8,0,Math.PI*2);ctx.fillStyle='#000';ctx.fill();
+  } else if(cf<160){
+    ctx.fillStyle='#000';ctx.font='bold 16px monospace';ctx.textAlign='center';
+    ctx.fillText('前方有6处狭窄等待通过...',240,250);
+    ctx.font='13px monospace';ctx.fillStyle='#555';
+    ctx.fillText('控制平衡，别让结石碰到管壁！',240,290);
+    ctx.textAlign='left';
+  } else if(cf<190){
+    ctx.fillStyle='#000';ctx.font='bold 24px monospace';ctx.textAlign='center';
+    ctx.fillText('▶ 出发！',240,280);
+    ctx.textAlign='left';
+  }
+  if(cf>195){
+    state='play';f=0;initGame();
+    document.getElementById('controls').classList.add('show');
+  }
+}
+
+function initGame(){
+  stone={pos:0.5,target:0.5};
+  progress=0;
+  alive=true;won=false;hp=100;outsideTimer=0;
+  stage=0;
+  particles=[];
+  curSectionProgress=0;
+  currentSectionIndex=-1;
+  randomizeOffsets();
+  updateSection();
+}
+
+let curSectionProgress=0,currentSectionIndex=-1;
+
+function updateSection(){
+  // Calculate which section we're in based on progress
+  const totalDur=sections.reduce((a,s)=>a+s.dur,0);
+  let accum=0;
+  for(let i=0;i<sections.length;i++){
+    accum+=sections[i].dur;
+    if(progress<accum/totalDur){
+      if(currentSectionIndex!==i){
+        currentSectionIndex=i;
+        curSectionProgress=0;
+        stage=i;
+      }
+      return i;
+    }
+  }
+  return sections.length-1;
+}
+
+// =========== Game ===========
+function updateGame(){
+  f++;
+  const totalDur=sections.reduce((a,s)=>a+s.dur,0);
+  const progressRate=1/GAME_DURATION_FRAMES;
+  progress+=progressRate;
+  
+  const idx=updateSection();
+  const sec=sections[idx];
+  curSectionProgress++;
+  
+  // Safe zone center offset (for narrowings that are off-center)
+  centerOffset=0;
+  
+  // Determine safe width
+  if(progress<0.01){
+    safeWidth=normalWidth*0.9;
+    flowSpeed=0.8;
+    centerOffset=0;
+  } else {
+    const entryProgress=curSectionProgress/sec.dur;
+    const t=Math.sin(entryProgress*Math.PI);
+    safeWidth=normalWidth-(normalWidth-sec.narrow)*t;
+    flowSpeed=sec.speed*(0.5+0.5*Math.sin(entryProgress*Math.PI));
+    // Smoothly apply offset - only during narrowing
+    centerOffset=sec.offset*t;
+  }
+  
+  // Check stone position against offset safe zone
+  center=0.5+centerOffset;
+  
+  // Player input
+  let input=0;
+  if(touchL)input=-1;
+  if(touchR)input=1;
+  
+  // Move stone with some inertia (smoother)
+  stone.target+=input*0.012;
+  stone.target=Math.max(0,Math.min(1,stone.target));
+  stone.pos+=(stone.target-stone.pos)*0.08;
+  
+  // Add perturbation based on flow speed (turbulence)
+  stone.target+=Math.sin(f*0.08)*flowSpeed*0.004;
+  stone.target+=Math.sin(f*0.2+1)*flowSpeed*0.003;
+  stone.target=Math.max(0,Math.min(1,stone.target));
+  
+  // Continuous damage: stay outside safe zone = take damage over time
+  // Rate: 5s outside = 100HP, so 0.5s = 10HP, 0.1s = 2HP
+  const halfSafe=safeWidth/2;
+  const stoneDist=Math.abs(stone.pos-center);
+  if(stoneDist>halfSafe){
+    outsideTimer++;
+    // Damage every 3 frames (~20HP per second, 5s = 100HP)
+    if(outsideTimer%3===0){
+      hp=Math.max(0,hp-1);
+      // Wall scrape particles
+      const cx=W/2;const cy=280;
+      if(Math.random()<0.3) particles.push({
+        x:cx+(stone.pos-0.5)*W*0.4,y:cy,
+        vx:(Math.random()-0.5)*4,vy:(Math.random()-0.5)*4-2,life:15,size:2
+      });
+      if(hp<=0){alive=false;gameOver(false);return;}
+    }
+  } else {
+    // Recover outsideTimer when back in safe zone
+    if(outsideTimer>0) outsideTimer=Math.max(0,outsideTimer-2);
+  }
+  
+  // Check completion
+  if(progress>=1){
+    won=true;
+    gameOver(true);
+    return;
+  }
+  
+  // Particles (flow bubbles + water splashes)
+  if(f%3===0){
+    particles.push({
+      x:Math.random()*W,y:H+10,
+      vy:-(1+Math.random()*flowSpeed*0.5),
+      vx:(Math.random()-0.5)*2,life:60,size:1+Math.random()*2
+    });
+  }
+  // Water splashes near boat
+  if(f%6===0&&hp>0){
+    const sx=W/2+(stone.pos-0.5)*W*0.7;
+    for(let j=0;j<2;j++) particles.push({
+      x:sx-12+Math.random()*24,y:300+Math.random()*20,
+      vx:(Math.random()-0.5)*2,vy:-(1+Math.random()*2),
+      life:15+Math.random()*10,size:2
+    });
+  }
+  for(let i=particles.length-1;i>=0;i--){
+    const p=particles[i];p.x+=p.vx;p.y+=p.vy;p.life--;
+    if(p.life<=0)particles.splice(i,1);
+  }
+}
+
+function drawGame(){
+  dr(0,0,W,H,'#efefef');
+  
+  // 1. Draw the ureter/urethra tube (visual context)
+  const tubeCenterX=W/2;
+  const tubeTop=110;
+  const tubeHeight=H-tubeTop-60;
+  const progression=progress;
+  
+  // Draw tube walls
+  const wallColor='#000';
+  ctx.strokeStyle=wallColor;ctx.lineWidth=2;
+  
+  // Tube width at current position
+  const halfTube=safeWidth*W*0.38;
+  const leftWall=tubeCenterX-halfTube;
+  const rightWall=tubeCenterX+halfTube;
+  
+  // Draw tube - current cross-section view
+  // Offset the tube visualization to show narrowing position
+  const offsetShift=centerOffset*W*0.3;
+  const leftWallOff=leftWall+offsetShift;
+  const rightWallOff=rightWall+offsetShift;
+  
+  const prevHalf=0.2*W; // entry width
+  ctx.beginPath();
+  ctx.moveTo(tubeCenterX-prevHalf,80);
+  ctx.lineTo(leftWallOff,tubeTop);
+  ctx.lineTo(leftWallOff,tubeTop+tubeHeight*0.7);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(tubeCenterX+prevHalf,80);
+  ctx.lineTo(rightWallOff,tubeTop);
+  ctx.lineTo(rightWallOff,tubeTop+tubeHeight*0.7);
+  ctx.stroke();
+  
+  // Draw stone in the tube
+  const stoneY=tubeTop+tubeHeight*0.35;
+  const stoneX=tubeCenterX+(stone.pos-0.5)*W*0.7;
+  
+  // Stone glow
+  ctx.fillStyle='rgba(0,0,0,0.08)';
+  ctx.beginPath();ctx.arc(stoneX,stoneY,14,0,Math.PI*2);ctx.fill();
+  
+  // Raft (漂流小舟) - flat wooden raft
+  const raftW=22,raftH=6;
+  const raftX=stoneX-raftW/2,raftY=stoneY-3;
+  // Logs of the raft
+  for(let i=0;i<4;i++){
+    const logX=raftX+i*6-2;
+    ctx.fillStyle='#000';
+    ctx.fillRect(logX,raftY,5,raftH);
+    ctx.fillStyle='#888';
+    ctx.fillRect(logX+1,raftY+1,3,raftH-2);
+  }
+  // Person on raft (pixel style)
+  const personX=stoneX,personY=stoneY-14;
+  // Body
+  ctx.fillStyle='#000';
+  ctx.fillRect(personX-4,personY+2,8,10);
+  // Head
+  ctx.beginPath();
+  ctx.arc(personX,personY,5,0,Math.PI*2);
+  ctx.fill();
+  // Head detail
+  ctx.fillStyle='#fff';
+  ctx.fillRect(personX+2,personY-1,2,2);
+  
+  // Paddling arms (animated)
+  const paddlePhase=f*0.15;
+  ctx.fillStyle='#000';
+  // Left arm with paddle
+  const lArmX=personX-6+Math.sin(paddlePhase)*6;
+  const lArmY=personY+3+Math.cos(paddlePhase)*3;
+  ctx.fillRect(lArmX,personY+3,Math.abs(personX-4-lArmX)||1,4);
+  // Paddle blade
+  ctx.fillRect(lArmX-1,lArmY,4,10);
+  ctx.fillRect(lArmX-2,lArmY+8,6,3);
+  
+  // Right arm with paddle
+  const rArmX=personX+6+Math.sin(paddlePhase+Math.PI)*6;
+  const rArmY=personY+3+Math.cos(paddlePhase+Math.PI)*3;
+  ctx.fillRect(rArmX-1,personY+3,Math.max(1,personX+4-rArmX),4);
+  ctx.fillRect(rArmX-2,rArmY,4,10);
+  ctx.fillRect(rArmX-3,rArmY+8,6,3);
+  
+
+  
+  // 2. Balance bar — 深色=安全区，保持光标在安全区内
+  const barX=30,barY=18,barW=420,barH=22;
+  // Bar border
+  ctx.strokeStyle='#000';ctx.lineWidth=2;ctx.strokeRect(barX,barY,barW,barH);
+  // Background (danger area)
+  dr(barX+2,barY+2,barW-4,barH-4,'#ddd');
+  
+  // Safe zone (dark center, width = tube width, clamped to bar bounds)
+  const safePx=Math.max(6,Math.floor(safeWidth*barW)-4);
+  const offsetPx=centerOffset*barW;
+  let safeX=barX+Math.floor((barW-safePx)/2)+offsetPx;
+  // Clamp: safe zone must stay within bar
+  if(safeX<barX+2) safeX=barX+2;
+  if(safeX+safePx>barX+barW-2) safeX=barX+barW-2-safePx;
+  dr(safeX,barY+2,safePx,barH-4,'#000');
+  // Safe zone label
+  ctx.fillStyle='#888';ctx.font='8px monospace';
+  ctx.fillText('安全区',safeX+3,barY+14);
+  
+  // Stone position indicator (cursor)
+  const curX=barX+stone.pos*barW;
+  dr(curX-4,barY-4,8,barH+8,'#666');
+  dr(curX-2,barY-2,4,barH+4,'#000');
+  // Triangle pointer below cursor
+  ctx.fillStyle='#000';
+  ctx.beginPath();
+  ctx.moveTo(curX-4,barY+barH+4);
+  ctx.lineTo(curX+4,barY+barH+4);
+  ctx.lineTo(curX,barY+barH+8);
+  ctx.closePath();
+  ctx.fill();
+  
+  // Labels
+  ctx.fillStyle='#aaa';ctx.font='8px monospace';
+  ctx.fillText('管壁',barX+2,barY+barH+16);
+  ctx.fillText('管壁',barX+barW-16,barY+barH+16);
+  
+  // Current section label
+  const secIdx=currentSectionIndex>=0?currentSectionIndex:0;
+  ctx.fillStyle='#000';ctx.font='bold 12px monospace';ctx.textAlign='center';
+  ctx.fillText(sections[secIdx].name,240,55);
+  ctx.textAlign='left';
+  
+  // Anatomical label (above, compact)
+  if(currentSectionIndex>=0){
+    ctx.fillStyle='#555';ctx.font='10px monospace';ctx.textAlign='center';
+    ctx.fillText(anatomyInfo[currentSectionIndex],240,68);
+    ctx.textAlign='left';
+  }
+  
+  // Particles (flow bubbles)
+  for(const p of particles){
+    ctx.fillStyle=`rgba(0,0,0,${0.1+0.2*p.life/60})`;
+    ctx.beginPath();ctx.arc(p.x,p.y,p.size,0,Math.PI*2);ctx.fill();
+  }
+  
+  // Narrowing indicators on tube
+  let cum=0;
+  for(let i=0;i<sections.length;i++){
+    cum+=sections[i].dur;
+    const pos=cum/sections.reduce((a,s)=>a+s.dur,0);
+    if(pos>progress && pos<progress+0.2){
+      const y=tubeTop+pos*tubeHeight;
+      ctx.fillStyle='rgba(0,0,0,0.15)';
+      ctx.fillRect(0,y-1,W,2);
+    }
+  }
+  
+  // Invincibility flash and wall proximity warning
+
+  
+  // Health bar (left side)
+  const hpBarY=78,hpBarW=180,hpBarX=30;
+  dr(hpBarX-1,hpBarY-1,hpBarW+2,12,'#000');
+  dr(hpBarX,hpBarY,hpBarW,10,'#ddd');
+  const hpRatio=Math.max(0,hp/100);
+  dr(hpBarX,hpBarY,Math.floor(hpBarW*hpRatio),10,hpRatio>0.4?'#000':'#666');
+  ctx.fillStyle='#000';ctx.font='bold 10px monospace';
+  ctx.fillText('HP '+hp+'/100',hpBarX+hpBarW+8,hpBarY+10);
+  
+  // Progress bar at bottom
+  const pbY=H-38,pbX=40,pbW=400,pbH=18;
+  dr(pbX-1,pbY-1,pbW+2,pbH+2,'#000');
+  dr(pbX,pbY,pbW,pbH,'#ddd');
+  dr(pbX,pbY,Math.floor(progress*pbW),pbH,'#000');
+  // Stage markers
+  let cumul=0;const totalD=sections.reduce((a,s)=>a+s.dur,0);
+  for(let i=0;i<sections.length;i++){
+    cumul+=sections[i].dur;
+    const px=pbX+Math.floor(cumul/totalD*pbW);
+    ctx.fillStyle='#555';ctx.font='7px monospace';
+    ctx.fillText('|',px-1,pbY+pbH-2);
+  }
+  // Percentage
+  ctx.fillStyle='#fff';ctx.font='bold 11px monospace';ctx.textAlign='center';
+  ctx.fillText(Math.floor(progress*100)+'%',pbX+pbW/2,pbY+14);
+  ctx.textAlign='left';
+  // Stage name below
+  if(currentSectionIndex>=0){
+    ctx.fillStyle='#888';ctx.font='9px monospace';ctx.textAlign='center';
+    ctx.fillText('第'+(currentSectionIndex+1)+'/'+sections.length+'关 · '+sections[currentSectionIndex].name,240,H-8);
+    ctx.textAlign='left';
+  }
+  
+  // Controls hint
+  ctx.fillStyle='#ccc';ctx.font='8px monospace';ctx.textAlign='center';
+  ctx.fillText('← 左右平衡 →',240,H-48);
+  ctx.textAlign='left';
+}
+
+function gameOver(win){
+  state='end';
+  document.getElementById('controls').classList.remove('show');
+  
+  if(win){
+    document.getElementById('resultTitle').textContent='🎉 通关成功！';
+    document.getElementById('resultMsg').textContent='结石成功排出体外！';
+    document.getElementById('resultAnatomy').textContent=
+      '输尿管3处狭窄 + 尿道3处狭窄，共6道关卡全部通过。'+
+      '临床统计约80%的输尿管结石嵌顿发生在第1和第3狭窄处。';
+  } else {
+    const sec=sections[currentSectionIndex]||{name:'输尿管'};
+    document.getElementById('resultTitle').textContent='💥 结石卡住了！';
+    document.getElementById('resultMsg').textContent=
+      `卡在：${sec.name}`;
+    document.getElementById('resultAnatomy').textContent=
+      anatomyInfo[currentSectionIndex]||'结石碰到了管壁，需要重新尝试。';
+  }
+  document.getElementById('result').classList.add('show');
+}
+
+function startGame(){
+  document.getElementById('screen').style.display='none';
+  state='cut';cf=0;
+}
+
+function restart(){
+  document.getElementById('result').classList.remove('show');
+  document.getElementById('screen').style.display='flex';
+  state='menu';
+}
+
+function loop(){
+  if(state==='cut')drawCut();
+  else if(state==='play'){updateGame();drawGame();}
+  requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>
