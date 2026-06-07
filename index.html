@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<title>激流勇进 - 肾结石排出模拟</title>
+<title>激流勇进 - 肾结石排出模拟（老年模式）</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box;}
 body{background:#222;display:flex;justify-content:center;align-items:center;min-height:100vh;font-family:'Courier New',monospace;overflow:hidden;touch-action:none;-webkit-user-select:none;user-select:none;}
@@ -18,14 +18,24 @@ canvas{width:100%;border:3px solid #000;background:#fff;display:block;image-rend
 #screen p{color:#333;font-size:clamp(12px,2.8vw,14px);margin:3px 0;max-width:90%;}
 #screen button,#result button{
   padding:clamp(10px,2.5vw,14px) clamp(24px,6vw,40px);font-size:clamp(14px,3.5vw,18px);
-  background:#fff;color:#000;border:3px solid #000;cursor:pointer;margin-top:15px;
+  background:#fff;color:#000;border:3px solid #000;cursor:pointer;margin-top:10px;
   font-family:'Courier New',monospace;font-weight:bold;min-width:clamp(130px,33vw,180px);
+  transition:all 0.08s;
 }
 #screen button:active,#result button:active{background:#000;color:#fff;}
+#screen button.elderly{background:#ffefe6;border-color:#b05030;color:#6a3020;}
+#screen button.elderly:active{background:#6a3020;color:#ffefe6;}
+#screen button.male{background:#d4f0ff;border-color:#206080;color:#103040;}
+#screen button.male:active{background:#103040;color:#d4f0ff;}
+#screen button.female{background:#ffe0f0;border-color:#803050;color:#501830;}
+#screen button.female:active{background:#501830;color:#ffe0f0;}
+#screen button.active-mode{background:#000;color:#fff;}
 #result{display:none;}
 #result.show{display:flex;}
 #result h2{color:#000;font-size:clamp(22px,5.5vw,30px);}
 #result .s{color:#000;font-size:clamp(14px,3.5vw,18px);margin:5px 0;}
+#result .age-compare{font-size:clamp(11px,2.8vw,14px);color:#555;margin-top:8px;border-top:1px solid #ccc;padding-top:8px;width:80%;}
+#result .age-compare strong{color:#000;}
 #controls{position:absolute;bottom:10px;left:0;width:100%;display:none;justify-content:space-between;padding:0 8px;z-index:5;}
 #controls.show{display:flex;}
 #controls button{
@@ -35,24 +45,31 @@ canvas{width:100%;border:3px solid #000;background:#fff;display:block;image-rend
   -webkit-tap-highlight-color:transparent;touch-action:none;
 }
 #controls button:active{background:rgba(0,0,0,0.25);}
+#elderlyTag{display:none;position:absolute;top:50px;right:8px;background:#b05030;color:#fff;font-size:11px;padding:2px 6px;font-family:'Courier New',monospace;z-index:6;border:1px solid #6a3020;}
+#elderlyTag.show{display:block;}
 </style>
 </head>
 <body>
 <div class="wrap">
 <canvas id="c" width="480" height="720"></canvas>
 <div id="controls"><button id="btnL">◀</button><button id="btnR">▶</button></div>
+<div id="elderlyTag">👴 老年模式</div>
 <div id="screen">
   <h1>🚤 激流勇进</h1>
   <div class="sub">[ 肾结石排出模拟 · 解剖学游戏 ]</div>
   <p>← → 控制小船，保持平衡通过输尿管和尿道</p>
   <p style="color:#999;font-size:clamp(10px,2.2vw,12px);margin-top:8px;">
     输尿管3处狭窄 + 膀胱 + 尿道3处狭窄 = 6道关卡</p>
-  <button onclick="startGame()">▶ 开始冒险</button>
+  <button onclick="startGame('normal')" style="margin-top:12px;">▶ 常规模式</button>
+  <button onclick="startGame('elderly_male')" class="elderly">👴 老年模式 · 男性</button>
+  <p style="color:#aaa;font-size:clamp(9px,2vw,11px);margin-top:10px;max-width:85%;">
+    * 老年模式蠕动速度降低约20%<br>** 男性模式增加前列腺增生压迫段</p>
 </div>
 <div id="result">
   <h2 id="resultTitle"></h2>
   <div class="s" id="resultMsg"></div>
   <div class="s" style="font-size:clamp(12px,2.8vw,15px);color:#555;" id="resultAnatomy"></div>
+  <div id="ageCompare" class="age-compare" style="display:none;"></div>
   <button onclick="restart()">再来一次</button>
 </div>
 </div>
@@ -67,8 +84,12 @@ var safeWidth=0.5,progress=0,flowSpeed=0,center=0.5,centerOffset=0;
 var stage=0,curSectionProgress=0,currentSectionIndex=-1;
 var alive=true,won=false,touchL=false,touchR=false;
 var peanuts=[],parts=[],particles=[];
+var gameMode='normal'; // 'normal','elderly_male','elderly_female'
+var sections=[];
 
-var sections=[
+// ==================== SECTION DEFINITIONS ====================
+
+var normalSections=[
   {name:'输尿管上段（平稳）',narrow:0.42,speed:0.5,dur:240,offset:0},
   {name:'第1狭窄·肾盂输尿管连接处',narrow:0.22,speed:1.5,dur:360,offset:-0.40},
   {name:'输尿管中段（恢复）',narrow:0.42,speed:0.5,dur:200,offset:0},
@@ -82,7 +103,29 @@ var sections=[
   {name:'尿道球部（恢复）',narrow:0.42,speed:0.5,dur:180,offset:0},
   {name:'第6狭窄·尿道外口',narrow:0.20,speed:1.8,dur:340,offset:0},
 ];
-var anatomyInfo=[
+
+// Elderly MALE: prostate hyperplasia → extra narrow at prostatic urethra
+var elderlyMaleSections=[
+  {name:'输尿管上段（平稳）',narrow:0.42,speed:0.4,dur:240,offset:0},
+  {name:'第1狭窄·肾盂输尿管连接处',narrow:0.22,speed:1.2,dur:360,offset:-0.40},
+  {name:'输尿管中段（恢复）',narrow:0.42,speed:0.4,dur:200,offset:0},
+  {name:'第2狭窄·越过髂血管处',narrow:0.30,speed:1.0,dur:320,offset:0.35},
+  {name:'输尿管下段（恢复）',narrow:0.42,speed:0.4,dur:200,offset:0},
+  {name:'第3狭窄·输尿管膀胱连接处',narrow:0.18,speed:1.4,dur:400,offset:-0.30},
+  {name:'🚩 膀胱（缓冲池）',narrow:0.72,speed:0.16,dur:520,offset:0},
+  {name:'第4狭窄·尿道内口（前列腺压迫）',narrow:0.22,speed:1.2,dur:300,offset:0.45},
+  {name:'⚠️ 前列腺增生部狭窄',narrow:0.15,speed:1.6,dur:320,offset:0.30},
+  {name:'第5狭窄·尿道膜部（前列腺压迫）',narrow:0.18,speed:1.3,dur:320,offset:-0.35},
+  {name:'尿道球部（恢复）',narrow:0.42,speed:0.4,dur:180,offset:0},
+  {name:'第6狭窄·尿道外口',narrow:0.20,speed:1.5,dur:340,offset:0},
+];
+
+// Elderly FEMALE: same sections, just 20% slower speed (no prostate)
+
+
+// ==================== ANATOMY INFO ====================
+
+var normalAnatomy=[
   '输尿管上段：管径约3-4mm，做好准备',
   '第1狭窄：肾盂输尿管连接处（UPJ），直径约2mm',
   '通过第1狭窄！进入输尿管中段',
@@ -97,7 +140,25 @@ var anatomyInfo=[
   '第6狭窄：尿道外口，直径约6-7mm，冲过去！',
 ];
 
-// Controls
+var elderlyMaleAnatomy=[
+  '输尿管上段：蠕动减弱，排空延迟',
+  '第1狭窄：肾盂输尿管连接处（UPJ），蠕动减慢',
+  '通过第1狭窄！进入输尿管中段',
+  '第2狭窄：越过髂血管处，蠕动速度降低',
+  '通过第2狭窄！进入输尿管下段',
+  '第3狭窄：输尿管膀胱连接处（UVJ），最窄，蠕动慢！',
+  '🚩 膀胱：容量可能增加，但收缩力减弱',
+  '第4狭窄：尿道内口，受前列腺压迫变窄！',
+  '⚠️ 前列腺增生压迫！前列腺部尿道显著变窄',
+  '第5狭窄：尿道膜部，受前列腺影响变窄',
+  '通过第5狭窄！前方最后一关',
+  '第6狭窄：尿道外口，弹性降低，冲过去！',
+];
+
+var anatomyInfo=[];
+
+// ==================== CONTROLS ====================
+
 var btnL=document.getElementById('btnL'),btnR=document.getElementById('btnR');
 btnL.addEventListener('touchstart',function(e){e.preventDefault();touchL=true;});
 btnL.addEventListener('touchend',function(e){e.preventDefault();touchL=false;});
@@ -112,7 +173,8 @@ document.onkeyup=function(e){if(e.key==='ArrowLeft')touchL=false;if(e.key==='Arr
 
 function dr(x,y,w,h,clr){ctx.fillStyle=clr;ctx.fillRect(x,y,w,h);}
 
-// Cutscene
+// ==================== CUTSCENE ====================
+
 function drawCut(){
   cf++;
   dr(0,0,W,H,'#fff');
@@ -120,29 +182,52 @@ function drawCut(){
     ctx.fillStyle='#000';ctx.font='bold 24px monospace';ctx.textAlign='center';
     ctx.fillText('🪨',240,200);ctx.font='16px monospace';ctx.fillText('肾脏内...',240,250);
     ctx.textAlign='left';
+    // Show mode tag in cutscene
+    if(gameMode!=='normal'){
+      ctx.fillStyle='#b05030';ctx.font='bold 12px monospace';ctx.textAlign='right';
+      ctx.fillText('👴 老年模式',W-10,40);ctx.textAlign='left';
+    }
   } else if(cf<120){
     ctx.font='bold 28px monospace';ctx.textAlign='center';
     ctx.fillText('💥',240,200);ctx.fillStyle='#000';ctx.font='16px monospace';
     ctx.fillText('结石脱落！',240,260);ctx.textAlign='left';
     var y=270+Math.sin(cf*0.3)*8;
     ctx.beginPath();ctx.arc(240,y,8,0,Math.PI*2);ctx.fillStyle='#000';ctx.fill();
+    if(gameMode!=='normal'){
+      ctx.fillStyle='#b05030';ctx.font='bold 12px monospace';ctx.textAlign='right';
+      ctx.fillText('👴 老年模式',W-10,40);ctx.textAlign='left';
+    }
   } else if(cf<160){
     ctx.fillStyle='#000';ctx.font='bold 16px monospace';ctx.textAlign='center';
-    ctx.fillText('前方有6处狭窄等待通过...',240,250);
+    if(gameMode==='elderly_male'){
+      ctx.fillText('前方有7处狭窄等待通过（含前列腺增生）...',240,250);
+    } else {
+      ctx.fillText('前方有6处狭窄等待通过...',240,250);
+    }
     ctx.textAlign='left';
+    if(gameMode!=='normal'){
+      ctx.fillStyle='#b05030';ctx.font='bold 12px monospace';ctx.textAlign='right';
+      ctx.fillText('👴 老年模式',W-10,40);ctx.textAlign='left';
+    }
   } else if(cf<190){
     ctx.fillStyle='#000';ctx.font='bold 24px monospace';ctx.textAlign='center';
     ctx.fillText('▶ 出发！',240,280);ctx.textAlign='left';
+    if(gameMode!=='normal'){
+      ctx.fillStyle='#b05030';ctx.font='bold 12px monospace';ctx.textAlign='right';
+      ctx.fillText('👴 老年模式',W-10,40);ctx.textAlign='left';
+    }
   }
   if(cf>195){
     state='play';f=0;
     hp=100;outsideTimer=0;progress=0;stone.pos=0.5;stone.target=0.5;
     curSectionProgress=0;currentSectionIndex=-1;stage=0;
     document.getElementById('controls').classList.add('show');
+    if(gameMode!=='normal')document.getElementById('elderlyTag').classList.add('show');
   }
 }
 
-// Game update
+// ==================== GAME UPDATE ====================
+
 function updateGame(){
   f++;
   var totalDur=sections.reduce(function(a,s){return a+s.dur;},0);
@@ -189,7 +274,7 @@ function updateGame(){
   if(progress>=1){won=true;gameOver(true);return;}
   if(f%3===0)particles.push({x:Math.random()*W,y:H+10,vy:-(1+Math.random()*flowSpeed*0.5),vx:(Math.random()-0.5)*2,life:60,size:1+Math.random()*2});
   if(f%6===0&&hp>0){
-    var sx=W/2+(stone.pos-0.5)*W*0.7;
+    var sx=W/2+(stone.pos-0.5)*W;
     for(var j=0;j<2;j++)particles.push({x:sx-12+Math.random()*24,y:320+Math.random()*20,vx:(Math.random()-0.5)*2,vy:-(1+Math.random()*2),life:15+Math.random()*10,size:2});
   }
   for(var i=particles.length-1;i>=0;i--){
@@ -198,21 +283,82 @@ function updateGame(){
   }
 }
 
-// Game draw
+// ==================== PROSTATE INDICATOR ====================
+
+function drawProstateIndicator(tubeCenterX,tubeTop,tubeHeight){
+  // Draw a prostate gland indicator on the right side of the tube
+  // Located near the prostatic urethra (between bladder and membranous urethra)
+  if(gameMode!=='elderly_male')return;
+  
+  var prostateY=tubeTop+tubeHeight*0.55; // ~prostatic urethra area
+  var prostateX=tubeCenterX+60;
+  
+  // Prostate gland (walnut shape)
+  ctx.save();
+  ctx.fillStyle='rgba(180,80,48,0.25)';
+  ctx.strokeStyle='rgba(180,80,48,0.6)';
+  ctx.lineWidth=2;
+  
+  ctx.beginPath();
+  ctx.ellipse(prostateX,prostateY,22,16,0,0,Math.PI*2);
+  ctx.fill();
+  ctx.stroke();
+  
+  // Label
+  ctx.fillStyle='#b05030';
+  ctx.font='bold 10px monospace';
+  ctx.textAlign='center';
+  ctx.fillText('前列腺',prostateX,prostateY-6);
+  ctx.fillText('增生',prostateX,prostateY+6);
+  ctx.textAlign='left';
+  
+  // Small arrow pointing to tube
+  ctx.fillStyle='rgba(180,80,48,0.5)';
+  ctx.beginPath();
+  ctx.moveTo(tubeCenterX+20,prostateY+2);
+  ctx.lineTo(tubeCenterX+34,prostateY-2);
+  ctx.lineTo(tubeCenterX+34,prostateY+6);
+  ctx.closePath();
+  ctx.fill();
+  
+  ctx.restore();
+}
+
+// ==================== GAME DRAW ====================
+
 function drawGame(){
   dr(0,0,W,H,'#efefef');
   var tubeCenterX=W/2,tubeTop=240,tubeHeight=H-tubeTop-130;
-  // Tube matches balance bar exactly
   var tubeHalf=Math.floor(safeWidth*W/2);
   var tubeOff=Math.floor(centerOffset*W);
   var lw=tubeCenterX-tubeHalf+tubeOff, rw=tubeCenterX+tubeHalf+tubeOff;
   
+  // Tube walls
   ctx.strokeStyle='#000';ctx.lineWidth=2;
   ctx.beginPath();ctx.moveTo(tubeCenterX-80,80);ctx.lineTo(lw,tubeTop);ctx.lineTo(lw,tubeTop+tubeHeight*0.7);ctx.stroke();
   ctx.beginPath();ctx.moveTo(tubeCenterX+80,80);ctx.lineTo(rw,tubeTop);ctx.lineTo(rw,tubeTop+tubeHeight*0.7);ctx.stroke();
   
+  // Prostate indicator on the tube wall if elderly male
+  if(gameMode==='elderly_male'){
+    var prostaticY=tubeTop+tubeHeight*0.52;
+    // Thickened tube wall at prostatic urethra
+    ctx.fillStyle='rgba(180,80,48,0.12)';
+    ctx.fillRect(lw-8,prostaticY-14,16,28);
+    ctx.fillRect(rw-8,prostaticY-14,16,28);
+    // Indentation marks on the walls indicating compression
+    ctx.fillStyle='rgba(180,80,48,0.3)';
+    // Left wall bump
+    ctx.beginPath();
+    ctx.arc(lw-5,prostaticY,10,0,Math.PI*2);
+    ctx.fill();
+    // Right wall bump
+    ctx.beginPath();
+    ctx.arc(rw+5,prostaticY,10,0,Math.PI*2);
+    ctx.fill();
+  }
+  
   var stoneY=tubeTop+tubeHeight*0.35;
-  var stoneX=tubeCenterX+(stone.pos-0.5)*W*0.7;
+  var stoneX=tubeCenterX+(stone.pos-0.5)*W;
   ctx.fillStyle='rgba(0,0,0,0.08)';ctx.beginPath();ctx.arc(stoneX,stoneY,14,0,Math.PI*2);ctx.fill();
   
   // Raft
@@ -228,6 +374,9 @@ function drawGame(){
   ctx.fillRect(lax,py+3,Math.max(1,Math.abs(px-4-lax)),4);ctx.fillRect(lax-1,lay,4,10);ctx.fillRect(lax-2,lay+8,6,3);
   var rax=px+6+Math.sin(pf+Math.PI)*6,ray=py+3+Math.cos(pf+Math.PI)*3;
   ctx.fillRect(rax-1,py+3,Math.max(1,Math.abs(px+4-rax)),4);ctx.fillRect(rax-2,ray,4,10);ctx.fillRect(rax-3,ray+8,6,3);
+  
+  // Prostate gland indicator on diagram
+  
   
   // Balance bar
   var barX=30,barY=18,barW=420,barH=22;
@@ -268,9 +417,11 @@ function drawGame(){
     ctx.fillStyle='#555';ctx.font='7px monospace';ctx.fillText('|',px2-1,pbY+pbH-2);}
   ctx.fillStyle='#fff';ctx.font='bold 13px monospace';ctx.textAlign='center';
   ctx.fillText(Math.min(100,Math.floor(progress*100))+'%',pbX+pbW/2,pbY+15);ctx.textAlign='left';
+  
+  var modeLabel=gameMode==='normal'?'常规模式':(gameMode==='elderly_male'?'👴 老年（男）':'👵 老年（女）');
   if(currentSectionIndex>=0){
     ctx.fillStyle='#888';ctx.font='12px monospace';ctx.textAlign='center';
-    ctx.fillText('第'+(currentSectionIndex+1)+'/'+sections.length+'关 · '+sections[currentSectionIndex].name,240,barY-85);
+    ctx.fillText(modeLabel+' · 第'+(currentSectionIndex+1)+'/'+sections.length+'关 · '+sections[currentSectionIndex].name,240,barY-85);
     ctx.textAlign='left';
   }
   
@@ -281,31 +432,76 @@ function drawGame(){
   }
 }
 
+// ==================== GAME OVER ====================
+
 function gameOver(win){
   state='end';
   document.getElementById('controls').classList.remove('show');
+  document.getElementById('elderlyTag').classList.remove('show');
+  
+  var elderlySuffix='';
+  if(gameMode==='elderly_male')elderlySuffix='（老年·男性·前列腺增生）';
+  
   if(win){
     document.getElementById('resultTitle').textContent='🎉 通关成功！';
-    document.getElementById('resultMsg').textContent='结石成功排出体外！';
-    document.getElementById('resultAnatomy').textContent='输尿管3处狭窄+尿道3处狭窄，6道关卡全部通过。';
+    var msg='结石成功排出体外！';
+    if(gameMode!=='normal')msg+='  '+elderlySuffix;
+    document.getElementById('resultMsg').textContent=msg;
+    
+    if(gameMode==='normal'){
+      document.getElementById('resultAnatomy').textContent='输尿管3处狭窄+尿道3处狭窄，6道关卡全部通过。';
+      document.getElementById('ageCompare').style.display='none';
+    } else if(gameMode==='elderly_male'){
+      document.getElementById('resultAnatomy').textContent='老年男性：输尿管3处狭窄+前列腺增生+尿道3处狭窄，7道关卡全部通过！';
+      document.getElementById('ageCompare').style.display='block';
+      document.getElementById('ageCompare').innerHTML=
+        '<strong>📊 年龄对比</strong><br>'+
+        '常规模式：蠕动速度正常 · 6处狭窄<br>'+
+        '老年模式：蠕动速度降低20% · 7处狭窄（含前列腺增生压迫段）<br>'+
+        '⚠️ 前列腺增生使尿道内口及前列腺部尿道显著变窄';
+    } else {
+      document.getElementById('resultAnatomy').textContent='老年女性：输尿管3处狭窄+尿道3处狭窄，蠕动减弱，6道关卡全部通过！';
+      document.getElementById('ageCompare').style.display='block';
+      document.getElementById('ageCompare').innerHTML=
+        '<strong>📊 年龄对比</strong><br>'+
+        '常规模式：蠕动速度正常 · 6处狭窄<br>'+
+        '老年模式：蠕动速度降低约20% · 6处狭窄<br>'+
+        '💪 输尿管蠕动随年龄增长而减弱，排石时间延长';
+    }
   } else {
     var sec=sections[currentSectionIndex]||{name:'输尿管'};
     document.getElementById('resultTitle').textContent='💥 结石卡住了！';
-    document.getElementById('resultMsg').textContent='卡在：'+sec.name;
+    document.getElementById('resultMsg').textContent='卡在：'+sec.name+'  '+elderlySuffix;
     document.getElementById('resultAnatomy').textContent=anatomyInfo[currentSectionIndex]||'需要重新尝试。';
+    document.getElementById('ageCompare').style.display='none';
   }
   document.getElementById('result').classList.add('show');
 }
 
-function startGame(){
+// ==================== START / RESTART ====================
+
+function startGame(mode){
+  gameMode=mode;
+  // Select sections based on mode
+  if(mode==='normal'){
+    sections=normalSections;
+    anatomyInfo=normalAnatomy;
+  } else if(mode==='elderly_male'){
+    sections=elderlyMaleSections;
+    anatomyInfo=elderlyMaleAnatomy;
+  }
+  // (female elderly mode removed - 6 narrow passages are male-specific)
   document.getElementById('screen').style.display='none';
   state='cut';cf=0;
 }
+
 function restart(){
   document.getElementById('result').classList.remove('show');
   document.getElementById('screen').style.display='flex';
+  document.getElementById('ageCompare').style.display='none';
   state='menu';
 }
+
 function loop(){
   dr(0,0,W,H,'#fff');
   if(state==='cut')drawCut();
